@@ -23,6 +23,8 @@ import (
 	"github.com/xitongsys/parquet-go/writer"
 )
 
+const basePath = "/data"
+
 const BATCH_SIZE = 1024
 
 type ConsumerConfig struct {
@@ -53,7 +55,8 @@ func RunConsumer(cfg *ConsumerConfig) {
 	log := log.NewLogger("consumer")
 
 	// Set up the sqlite database
-	db, err := sql.Open("sqlite3", "./validator_tracker.sqlite")
+	dbPath := fmt.Sprintf("%s/validator_tracker.sqlite", basePath)
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Error().Err(err).Msg("Error opening database")
 	}
@@ -64,7 +67,8 @@ func RunConsumer(cfg *ConsumerConfig) {
 		log.Error().Err(err).Msg("Error setting up database")
 	}
 
-	err = loadIPMetadataFromCSV(db, "ip_metadata.csv")
+	csvPath := fmt.Sprintf("%s/ip_metadata.csv", basePath)
+	err = loadIPMetadataFromCSV(db, csvPath)
 	if err != nil {
 		log.Error().Err(err).Msg("Error setting up database")
 	}
@@ -84,19 +88,22 @@ func RunConsumer(cfg *ConsumerConfig) {
 	}
 
 	// Create Parquet writer files
-	w_discovery, err := local.NewLocalFileWriter("discovery_events.parquet")
+	discoveryFilePath := fmt.Sprintf("%s/discovery_events.parquet", basePath)
+	w_discovery, err := local.NewLocalFileWriter(discoveryFilePath)
 	if err != nil {
 		log.Error().Err(err).Msg("Error creating discovery events parquet file")
 	}
 	defer w_discovery.Close()
 
-	w_metadata, err := local.NewLocalFileWriter("metadata_events.parquet")
+	metadataFilePath := fmt.Sprintf("%s/metadata_events.parquet", basePath)
+	w_metadata, err := local.NewLocalFileWriter(metadataFilePath)	
 	if err != nil {
 		log.Error().Err(err).Msg("Error creating metadata events parquet file")
 	}
 	defer w_metadata.Close()
 
-	w_validator, err := local.NewLocalFileWriter("validator_metadata_events.parquet")
+	validatorFilePath := fmt.Sprintf("%s/validator_metadata_events.parquet", basePath)
+	w_validator, err := local.NewLocalFileWriter(validatorFilePath)
 	if err != nil {
 		log.Error().Err(err).Msg("Error creating validator parquet file")
 	}
