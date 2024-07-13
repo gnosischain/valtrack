@@ -50,3 +50,17 @@ type SimpleMetaData struct {
 	Attnets   bitfield.Bitvector64 `parquet:"name=attnets, type=LIST, valuetype=BYTE_ARRAY" json:"attnets" ch:"attnets"`
 	Syncnets  bitfield.Bitvector4  `parquet:"name=syncnets, type=LIST, valuetype=BYTE_ARRAY" json:"syncnets" ch:"syncnets"`
 }
+
+type IPMetadataEvent struct {
+    IP                string  `parquet:"name=ip, type=BYTE_ARRAY, convertedtype=UTF8" json:"ip" ch:"ip"`
+    Hostname          string  `parquet:"name=hostname, type=BYTE_ARRAY, convertedtype=UTF8" json:"hostname" ch:"hostname"`
+    City              string  `parquet:"name=city, type=BYTE_ARRAY, convertedtype=UTF8" json:"city" ch:"city"`
+    Region            string  `parquet:"name=region, type=BYTE_ARRAY, convertedtype=UTF8" json:"region" ch:"region"`
+    Country           string  `parquet:"name=country, type=BYTE_ARRAY, convertedtype=UTF8" json:"country" ch:"country"`
+    Latitude          float64 `parquet:"name=latitude, type=DOUBLE" json:"latitude" ch:"latitude"`
+    Longitude         float64 `parquet:"name=longitude, type=DOUBLE" json:"longitude" ch:"longitude"`
+    PostalCode        string  `parquet:"name=postal_code, type=BYTE_ARRAY, convertedtype=UTF8" json:"postal_code" ch:"postal_code"`
+    ASN               string  `parquet:"name=asn, type=BYTE_ARRAY, convertedtype=UTF8" json:"asn" ch:"asn"`
+    ASNOrganization   string  `parquet:"name=asn_organization, type=BYTE_ARRAY, convertedtype=UTF8" json:"asn_organization" ch:"asn_organization"`
+    ASNType           string  `parquet:"name=asn_type, type=BYTE_ARRAY, convertedtype=UTF8" json:"asn_type" ch:"asn_type"`
+}

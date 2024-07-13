@@ -66,9 +66,24 @@ var ConsumerCommand = &cli.Command{
 			Usage: "Dune API key",
 		},
 		&cli.Uint64Flag{
-			Name:  "batch-size",
+			Name:  "max-validator-batch-size",
 			Usage: "Clickhouse max validator batch size",
-			Value: 128,
+			Value: 16,
+		},
+		&cli.Uint64Flag{
+			Name:  "max-ip-metadata-batch-size",
+			Usage: "Clickhouse max IP metadata batch size",
+			Value: 16,
+		},
+		&cli.Uint64Flag{
+			Name:  "max-peer-discovered-events-batch-size",
+			Usage: "Clickhouse max peer discovered events batch size",
+			Value: 512,
+		},
+		&cli.Uint64Flag{
+			Name:  "max-metadata-received-events-batch-size",
+			Usage: "Clickhouse max metadata received events batch size",
+			Value: 512,
 		},
 	},
 }
@@ -101,11 +116,14 @@ func runConsumer(c *cli.Context) error {
 		DuneNamespace: c.String("dune.namespace"),
 		DuneApiKey:    c.String("dune.api-key"),
 		ChCfg: clickhouse.ClickhouseConfig{
-			Endpoint:              c.String("endpoint"),
-			DB:                    c.String("db"),
-			Username:              c.String("username"),
-			Password:              c.String("password"),
-			MaxValidatorBatchSize: c.Uint64("batch-size"),
+			Endpoint:                       c.String("endpoint"),
+			DB:                             c.String("db"),
+			Username:                       c.String("username"),
+			Password:                       c.String("password"),
+			MaxValidatorBatchSize:          c.Uint64("max-validator-batch-size"),
+			MaxIPMetadataBatchSize:         c.Uint64("max-ip-metadata-batch-size"),
+			MaxPeerDiscoveredEventsBatchSize: c.Uint64("max-peer-discovered-events-batch-size"),
+			MaxMetadataReceivedEventsBatchSize: c.Uint64("max-metadata-received-events-batch-size"),
 		},
 	}
 
