@@ -2,7 +2,7 @@ package clickhouse
 
 import (
 	"context"
-	//"crypto/tls"
+	"crypto/tls"
 	"fmt"
 	"time"
 
@@ -122,10 +122,8 @@ func NewClickhouseClient(cfg *ClickhouseConfig) (*ClickhouseClient, error) {
 		Debugf: func(format string, v ...interface{}) {
 			log.Debug().Str("module", "clickhouse").Msgf(format, v)
 		},
-	// TLS is not configured
-	//	TLS: &tls.Config{
-	//		InsecureSkipVerify: true,
-	//	},
+		Protocol: clickhouse.Native,
+		TLS: &tls.Config{},
 	})
 
 	if err != nil {
