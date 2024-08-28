@@ -1,9 +1,8 @@
 name: Build & Release GC valtrack scraper
 
 on:
-  push:
-    branches:
-      - ci
+    pull_request:
+      types: [ closed ]
 
 concurrency:
   group: gc-valtrack-${{ github.ref }}
@@ -11,6 +10,8 @@ concurrency:
 
 jobs:
   build:
+    
+    if: github.event.pull_request.merged == true
 
     strategy:
       matrix:
