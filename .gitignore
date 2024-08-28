@@ -5,3 +5,4 @@ peerstore.db
 *.sqlite
 *.sqlite-journal
 api_keys.txt
+vendor
