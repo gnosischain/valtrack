@@ -1,0 +1,53 @@
+name: Build & Release GC valtrack scraper
+
+on:
+  push:
+    branches:
+      - ci
+
+concurrency:
+  group: gc-valtrack-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get Organization Name
+        id: org_name
+        run: |
+          org_name=$(echo "${{ github.repository_owner }}")
+          echo "Organization Name: $org_name"
+          echo "org_name=$org_name" >> $GITHUB_OUTPUT
+
+      - name: Extract commit
+        id: commit
+        uses: prompt/actions-commit-hash@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ steps.org_name.outputs.org_name }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Latest
+        run: |
+          docker build . --tag ghcr.io/${{ steps.org_name.outputs.org_name }}/valtrack:latest
+          docker push ghcr.io/${{ steps.org_name.outputs.org_name }}/valtrack:latest
+
+      - name: Push Versioned
+        run: |
+          docker build . --tag ghcr.io/${{ steps.org_name.outputs.org_name }}/valtrack:${{ steps.commit.outputs.short }}
+          docker push ghcr.io/${{ steps.org_name.outputs.org_name }}/valtrack:${{ steps.commit.outputs.short }}
+            
