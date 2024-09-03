@@ -274,6 +274,11 @@ func (c *Consumer) Start(name string) error {
         return err
     }
 
+    // Load IP metadata from CSV
+    if err := c.chClient.LoadIPMetadataFromCSV(); err != nil {
+        c.log.Error().Err(err).Msg("Failed to load IP metadata from CSV")
+    }
+
     go func() {
         for {
             batch, err := consumer.FetchNoWait(BATCH_SIZE)
@@ -303,7 +308,7 @@ func handleMessage(c *Consumer, msg jetstream.Msg) {
     progress := float64(md.Sequence.Stream) / (float64(md.NumPending) + float64(md.Sequence.Stream)) * 100
 
     switch msg.Subject() {
-	case "events.ip_metadata":
+    case "events.ip_metadata":
         var ipEvent types.IPMetadataEvent
         if err := json.Unmarshal(msg.Data(), &ipEvent); err != nil {
             c.log.Err(err).Msg("Error unmarshaling IPMetadataEvent")
@@ -312,6 +317,11 @@ func handleMessage(c *Consumer, msg jetstream.Msg) {
         }
         c.log.Info().Str("IP", ipEvent.IP).Msg("IP metadata received")
         c.ipMetadataChan <- &ipEvent
+
+        // Send to ClickHouse if client is initialized
+        if c.chClient != nil {
+            c.chClient.IPMetadataEventChan <- &ipEvent
+        }
 
     case "events.peer_discovered":
         var event types.PeerDiscoveredEvent
@@ -323,6 +333,11 @@ func handleMessage(c *Consumer, msg jetstream.Msg) {
 
         c.log.Info().Time("timestamp", md.Timestamp).Uint64("pending", md.NumPending).Str("progress", fmt.Sprintf("%.2f%%", progress)).Msg("peer_discovered")
         c.storeDiscoveryEvent(event)
+
+        // Send to ClickHouse if client is initialized
+        if c.chClient != nil {
+            c.chClient.PeerDiscoveredEventChan <- &event
+        }
 
     case "events.metadata_received":
         var event types.MetadataReceivedEvent
@@ -336,6 +351,10 @@ func handleMessage(c *Consumer, msg jetstream.Msg) {
         c.handleMetadataEvent(event)
         c.storeMetadataEvent(event)
 
+        // Send to ClickHouse if client is initialized
+        if c.chClient != nil {
+            c.chClient.MetadataReceivedEventChan <- &event
+        }
 
     default:
         c.log.Warn().Str("subject", msg.Subject()).Msg("Unknown event type")

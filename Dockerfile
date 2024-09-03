@@ -1,41 +1,42 @@
 ARG GO_VERSION=1.22.5
+
+# Stage 1: Dependency management and build
 FROM golang:${GO_VERSION}-bookworm as builder
 
-# Install CA certificates
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
 
-# Set the working directory inside the container to /usr/src/app
-WORKDIR /usr/src/app
-
-# Copy the Go module files first to leverage Docker cache for dependency layers
+# Copy go.mod and go.sum files
 COPY go.mod go.sum ./
 
-# Run module download separately to also leverage caching of downloaded modules
+# Download dependencies and verify modules
 RUN go mod download && go mod verify
-
-# Copy the CSV file into a data directory within the builder stage
-COPY ip_metadata.csv ./data/ip_metadata.csv
 
 # Copy the rest of the application source code
 COPY . .
 
-# Build the application; output the binary to a known location
-RUN go build -v -o /run-app .
+# Run go mod tidy to ensure the go.mod file is up to date
+RUN go mod tidy
 
-# Expose port 9000 if it's being used by the application
-EXPOSE 9000
+# Build the application and capture the output
+RUN go build -v -o /run-app . 
 
-# Final stage based on Debian Bookworm.
-FROM debian:bookworm
+# Stage 2: Final stage
+FROM debian:bookworm-slim
 
-# Install CA certificates in the final image to ensure they are present.
+# Install CA certificates in the final image
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Copy the built executable from the builder stage
 COPY --from=builder /run-app /usr/local/bin/run-app
 
-# Copy the CSV and other data files from the builder stage to the runtime image
-COPY --from=builder /usr/src/app/data /data
+# Create necessary directory
+RUN mkdir -p /app/data
+
+# Copy the CSV file to /app/data
+COPY /data/ip_metadata.csv /app/data/ip_metadata.csv
+
+# Set the working directory
+WORKDIR /app
 
 # Set the command to run the application
 CMD ["/usr/local/bin/run-app"]
