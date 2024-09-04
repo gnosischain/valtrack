@@ -1,8 +1,10 @@
 module github.com/chainbound/valtrack
 
-go 1.22.2
+go 1.22
 
 require (
+	github.com/herumi/bls-eth-go-binary v1.28.1
+    github.com/supranational/blst v0.3.11
 	github.com/ClickHouse/clickhouse-go/v2 v2.25.0
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.2.0
 	github.com/ethereum/go-ethereum v1.14.0

@@ -11,10 +11,181 @@ import (
 	"github.com/chainbound/valtrack/log"
 	"github.com/chainbound/valtrack/types"
 	"github.com/rs/zerolog"
+
+    "encoding/csv"
+	"encoding/json"
+    "os"
+	"io"
+    "strconv"
+    "strings"
+	"regexp"
 )
 
+func (c *ClickhouseClient) LoadIPMetadataFromCSV() error {
+	// Check if the table is empty
+    isEmpty, err := c.isTableEmpty("ip_metadata")
+    if err != nil {
+        return fmt.Errorf("failed to check if table is empty: %w", err)
+    }
+
+    if !isEmpty {
+        c.log.Info().Msg("ip_metadata table is not empty, skipping CSV load")
+        return nil
+    }
+
+    csvPath := "/app/data/ip_metadata.csv"
+    
+    file, err := os.Open(csvPath)
+    if err != nil {
+        c.log.Error().Err(err).Str("path", csvPath).Msg("Failed to open IP metadata CSV file")
+        return err
+    }
+    defer file.Close()
+
+    c.log.Info().Str("path", csvPath).Msg("Successfully opened IP metadata CSV file")
+
+    reader := csv.NewReader(file)
+    reader.FieldsPerRecord = -1 // Allow variable number of fields
+
+    batch, err := c.chConn.PrepareBatch(context.Background(), "INSERT INTO ip_metadata")
+    if err != nil {
+        return fmt.Errorf("failed to prepare batch: %w", err)
+    }
+
+    for {
+        record, err := reader.Read()
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            return fmt.Errorf("error reading CSV record: %w", err)
+        }
+
+        // Ensure we have at least the minimum required fields
+        if len(record) < 9 {
+            c.log.Warn().Str("row", strings.Join(record, ",")).Msg("Skipping row with insufficient columns")
+            continue
+        }
+
+        // Parse latitude and longitude
+        latLon := strings.Split(record[5], ",")
+        lat, err := parseFloat(latLon[0])
+        if err != nil {
+            c.log.Warn().Str("latitude", latLon[0]).Err(err).Msg("Invalid latitude, using 0")
+            lat = 0
+        }
+        lon, err := parseFloat(latLon[1])
+        if err != nil {
+            c.log.Warn().Str("longitude", latLon[1]).Err(err).Msg("Invalid longitude, using 0")
+            lon = 0
+        }
+
+        // Parse ASN info
+        var asnInfo struct {
+            ASN    string `json:"asn"`
+                Name   string `json:"name"`
+                Type   string `json:"type"`
+                Domain string `json:"domain"`
+                Route  string `json:"route"`
+        }
+		// Preprocess the JSON string
+        asnJSONString := record[8]
+
+        // Handle "nan" case
+        if strings.ToLower(asnJSONString) == "nan" {
+            c.log.Warn().Str("original_asn_json", asnJSONString).Msg("ASN JSON is 'nan', using default values")
+            asnInfo = struct {
+                ASN    string `json:"asn"`
+                Name   string `json:"name"`
+                Type   string `json:"type"`
+                Domain string `json:"domain"`
+                Route  string `json:"route"`
+            }{ASN: "", Name: "", Type: "", Domain: "", Route: ""}
+            continue // Skip to the next record
+        }
+
+        // Replace single quotes with double quotes
+        asnJSONString = strings.ReplaceAll(asnJSONString, "'", "\"")
+        
+        // Use regex to find the "name" field and properly escape its value
+        re := regexp.MustCompile(`"name":\s*"((?:[^"\\]|\\.)*)"`)
+        asnJSONString = re.ReplaceAllStringFunc(asnJSONString, func(match string) string {
+            parts := re.FindStringSubmatch(match)
+            if len(parts) < 2 {
+                return match
+            }
+            // Escape any double quotes within the value
+            escapedValue := strings.ReplaceAll(parts[1], "\"", "\\\"")
+            return fmt.Sprintf(`"name": "%s"`, escapedValue)
+        })
+
+        // Ensure the JSON string is complete
+        if !strings.HasSuffix(asnJSONString, "}") {
+            asnJSONString += "}"
+        }
+
+        c.log.Debug().Str("processed_asn_json", asnJSONString).Msg("Processed ASN JSON before parsing")
+
+        if err := json.Unmarshal([]byte(asnJSONString), &asnInfo); err != nil {
+            c.log.Warn().Str("original_asn_json", record[8]).Str("processed_asn_json", asnJSONString).Err(err).Msg("Failed to parse ASN JSON, using default values")
+            asnInfo = struct {
+                ASN    string `json:"asn"`
+                Name   string `json:"name"`
+                Type   string `json:"type"`
+                Domain string `json:"domain"`
+                Route  string `json:"route"`
+            }{ASN: "", Name: "", Type: "", Domain: "", Route: ""}
+        }
+
+        err = batch.Append(
+            record[0],                        // IP
+            record[1],                        // Hostname
+            record[2],                        // City
+            record[3],                        // Region
+            record[4],                        // Country
+            lat,                              // Latitude
+            lon,                              // Longitude
+            record[7],                        // Postal Code
+            strings.TrimPrefix(asnInfo.ASN, "AS"), // ASN
+            asnInfo.Name,                     // ASN Organization
+            asnInfo.Type,                     // ASN Type
+        )
+        if err != nil {
+            return fmt.Errorf("failed to append to batch: %w", err)
+        }
+    }
+
+    if err := batch.Send(); err != nil {
+        return fmt.Errorf("failed to send batch: %w", err)
+    }
+    
+
+    c.log.Info().Msg("Successfully loaded IP metadata from CSV")
+    return nil
+}
+
+// Helper function to parse float values, treating "nan" as 0
+func parseFloat(s string) (float64, error) {
+    s = strings.TrimSpace(s)
+    if s == "" || strings.ToLower(s) == "nan" {
+        return 0, nil
+    }
+    return strconv.ParseFloat(s, 64)
+}
+
+func (c *ClickhouseClient) isTableEmpty(tableName string) (bool, error) {
+    query := fmt.Sprintf("SELECT count(*) FROM %s", tableName)
+    var count uint64 
+    err := c.chConn.QueryRow(context.Background(), query).Scan(&count)
+    if err != nil {
+        return false, err
+    }
+    return count == 0, nil
+}
+
 func ValidatorMetadataDDL(db string) string {
-	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s.validator_metadata (
+	return fmt.Sprintf(`
+        CREATE TABLE IF NOT EXISTS %s.validator_metadata (
 		enr String,
 		id String,
 		multiaddr String,
