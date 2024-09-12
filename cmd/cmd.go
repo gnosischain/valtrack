@@ -38,10 +38,10 @@ var ConsumerCommand = &cli.Command{
 			Value: "consumer-" + uuid.New().String(),
 		},
 		&cli.StringFlag{
-			Name:   "endpoint",
-			Usage:  "Clickhouse server endpoint",
-			Value:  "", // If empty URL, run the consumer without Clickhouse
-			EnvVar: "VALTRACK_CH_URL",
+			Name:    "endpoint",
+			Usage:   "Clickhouse server endpoint",
+			Value:   "", // If empty URL, run the consumer without Clickhouse
+			EnvVars: []string{"VALTRACK_CH_URL"},
 		},
 		&cli.StringFlag{
 			Name:  "db",
@@ -49,16 +49,16 @@ var ConsumerCommand = &cli.Command{
 			Value: "default",
 		},
 		&cli.StringFlag{
-			Name:   "username",
-			Usage:  "Clickhouse username",
-			Value:  "default",
-			EnvVar: "CLICKHOUSE_USER",
+			Name:    "username",
+			Usage:   "Clickhouse username",
+			Value:   "default",
+			EnvVars: []string{"CLICKHOUSE_USER"},
 		},
 		&cli.StringFlag{
-			Name:   "password",
-			Usage:  "Clickhouse password",
-			Value:  "",
-			EnvVar: "CLICKHOUSE_PASSWORD",
+			Name:    "password",
+			Usage:   "Clickhouse password",
+			Value:   "",
+			EnvVars: []string{"CLICKHOUSE_PASSWORD"},
 		},
 		&cli.StringFlag{
 			Name:  "dune.namespace",
