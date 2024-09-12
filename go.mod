@@ -3,8 +3,6 @@ module github.com/chainbound/valtrack
 go 1.22
 
 require (
-	github.com/herumi/bls-eth-go-binary v1.28.1
-    github.com/supranational/blst v0.3.11
 	github.com/ClickHouse/clickhouse-go/v2 v2.25.0
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.2.0
 	github.com/ethereum/go-ethereum v1.14.0
@@ -81,7 +79,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.19.0 // indirect
 	github.com/hashicorp/golang-lru v0.5.5-0.20210104140557-80c98217689d // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.5 // indirect
-	github.com/herumi/bls-eth-go-binary v0.0.0-20210917013441-d37c07cfda4e // indirect
+	github.com/herumi/bls-eth-go-binary v1.28.1 // indirect
 	github.com/holiman/uint256 v1.2.4 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/ipfs/go-cid v0.4.1 // indirect
