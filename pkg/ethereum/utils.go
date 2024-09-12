@@ -15,6 +15,12 @@ func getCrawlerLocation() string {
 	if region := os.Getenv("AWS_REGION"); region != "" {
 		return region
 	}
+	if region := os.Getenv("AWS_DEFAULT_REGION"); region != "" {
+		return region
+	}
+	if region := os.Getenv("REGION"); region != "" {
+		return region
+	}
 	return "UNKOWN_REGION"
 }
 

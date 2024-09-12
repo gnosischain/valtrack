@@ -38,9 +38,10 @@ var ConsumerCommand = &cli.Command{
 			Value: "consumer-" + uuid.New().String(),
 		},
 		&cli.StringFlag{
-			Name:  "endpoint",
-			Usage: "Clickhouse server endpoint",
-			Value: "", // If empty URL, run the consumer without Clickhouse
+			Name:   "endpoint",
+			Usage:  "Clickhouse server endpoint",
+			Value:  "", // If empty URL, run the consumer without Clickhouse
+			EnvVar: "VALTRACK_CH_URL",
 		},
 		&cli.StringFlag{
 			Name:  "db",
@@ -48,14 +49,16 @@ var ConsumerCommand = &cli.Command{
 			Value: "default",
 		},
 		&cli.StringFlag{
-			Name:  "username",
-			Usage: "Clickhouse username",
-			Value: "default",
+			Name:   "username",
+			Usage:  "Clickhouse username",
+			Value:  "default",
+			EnvVar: "CLICKHOUSE_USER",
 		},
 		&cli.StringFlag{
-			Name:  "password",
-			Usage: "Clickhouse password",
-			Value: "",
+			Name:   "password",
+			Usage:  "Clickhouse password",
+			Value:  "",
+			EnvVar: "CLICKHOUSE_PASSWORD",
 		},
 		&cli.StringFlag{
 			Name:  "dune.namespace",
@@ -116,13 +119,13 @@ func runConsumer(c *cli.Context) error {
 		DuneNamespace: c.String("dune.namespace"),
 		DuneApiKey:    c.String("dune.api-key"),
 		ChCfg: clickhouse.ClickhouseConfig{
-			Endpoint:                       c.String("endpoint"),
-			DB:                             c.String("db"),
-			Username:                       c.String("username"),
-			Password:                       c.String("password"),
-			MaxValidatorBatchSize:          c.Uint64("max-validator-batch-size"),
-			MaxIPMetadataBatchSize:         c.Uint64("max-ip-metadata-batch-size"),
-			MaxPeerDiscoveredEventsBatchSize: c.Uint64("max-peer-discovered-events-batch-size"),
+			Endpoint:                           c.String("endpoint"),
+			DB:                                 c.String("db"),
+			Username:                           c.String("username"),
+			Password:                           c.String("password"),
+			MaxValidatorBatchSize:              c.Uint64("max-validator-batch-size"),
+			MaxIPMetadataBatchSize:             c.Uint64("max-ip-metadata-batch-size"),
+			MaxPeerDiscoveredEventsBatchSize:   c.Uint64("max-peer-discovered-events-batch-size"),
 			MaxMetadataReceivedEventsBatchSize: c.Uint64("max-metadata-received-events-batch-size"),
 		},
 	}
