@@ -3,6 +3,7 @@ package clickhouse
 import (
 	"context"
 	"crypto/tls"
+    "database/sql"
 	"fmt"
 	"time"
 
@@ -267,50 +268,68 @@ type ClickhouseConfig struct {
 }
 
 type ClickhouseClient struct {
-	cfg *ClickhouseConfig
-	log zerolog.Logger
+    cfg    *ClickhouseConfig
+    log    zerolog.Logger
+    chConn clickhouse.Conn
+    sqlDB  *sql.DB
 
-	chConn driver.Conn
-
-	ValidatorEventChan      chan *types.ValidatorEvent      
-    IPMetadataEventChan     chan *types.IPMetadataEvent     
-	PeerDiscoveredEventChan chan *types.PeerDiscoveredEvent
-	MetadataReceivedEventChan chan *types.MetadataReceivedEvent
+    ValidatorEventChan        chan *types.ValidatorEvent
+    IPMetadataEventChan       chan *types.IPMetadataEvent
+    PeerDiscoveredEventChan   chan *types.PeerDiscoveredEvent
+    MetadataReceivedEventChan chan *types.MetadataReceivedEvent
 }
 
 
 func NewClickhouseClient(cfg *ClickhouseConfig) (*ClickhouseClient, error) {
-	log := log.NewLogger("clickhouse")
+    log := log.NewLogger("clickhouse")
 
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr:        []string{cfg.Endpoint},
-		DialTimeout: time.Second * 60,
-		Auth: clickhouse.Auth{
-			Database: cfg.DB,
-			Username: cfg.Username,
-			Password: cfg.Password,
-		},
-		Debugf: func(format string, v ...interface{}) {
-			log.Debug().Str("module", "clickhouse").Msgf(format, v)
-		},
-		Protocol: clickhouse.Native,
-		TLS: &tls.Config{},
-	})
+    conn, err := clickhouse.Open(&clickhouse.Options{
+        Addr:        []string{cfg.Endpoint},
+        DialTimeout: time.Second * 60,
+        Auth: clickhouse.Auth{
+            Database: cfg.DB,
+            Username: cfg.Username,
+            Password: cfg.Password,
+        },
+        Debugf: func(format string, v ...interface{}) {
+            log.Debug().Str("module", "clickhouse").Msgf(format, v)
+        },
+        Protocol: clickhouse.Native,
+        TLS:      &tls.Config{},
+    })
 
-	if err != nil {
-		return nil, err
-	}
+    if err != nil {
+        return nil, err
+    }
 
-	return &ClickhouseClient{
-		cfg:    cfg,
-		log:    log,
-		chConn: conn,
+    // Create a standard sql.DB connection
+    sqlDB, err := sql.Open("clickhouse", cfg.Endpoint)
+    if err != nil {
+        return nil, err
+    }
 
-		ValidatorEventChan: make(chan *types.ValidatorEvent, 16384),
-		IPMetadataEventChan:     make(chan *types.IPMetadataEvent, 16384),     
-		PeerDiscoveredEventChan: make(chan *types.PeerDiscoveredEvent, 16384),
-		MetadataReceivedEventChan: make(chan *types.MetadataReceivedEvent, 16384),
-	}, nil
+    return &ClickhouseClient{
+        cfg:    cfg,
+        log:    log,
+        chConn: conn,
+        sqlDB:  sqlDB,
+
+        ValidatorEventChan:        make(chan *types.ValidatorEvent, 16384),
+        IPMetadataEventChan:       make(chan *types.IPMetadataEvent, 16384),
+        PeerDiscoveredEventChan:   make(chan *types.PeerDiscoveredEvent, 16384),
+        MetadataReceivedEventChan: make(chan *types.MetadataReceivedEvent, 16384),
+    }, nil
+}
+
+func (c *ClickhouseClient) QueryRow(ctx context.Context, query string, args ...interface{}) *sql.Row {
+    return c.sqlDB.QueryRowContext(ctx, query, args...)
+}
+
+func (c *ClickhouseClient) Close() error {
+    if err := c.chConn.Close(); err != nil {
+        return err
+    }
+    return c.sqlDB.Close()
 }
 
 func (c *ClickhouseClient) initializeTables() error {
