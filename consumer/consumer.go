@@ -6,26 +6,27 @@ import (
     "encoding/hex"
     "encoding/json"
     "fmt"
+    "net"
     "net/http"
     "os"
     "os/signal"
+    "strconv"
+    "strings"
+    "sync"
     "syscall"
     "time"
-    "sync"
-    "net"
-    "strconv"
 
-    ma "github.com/multiformats/go-multiaddr"
     ch "github.com/chainbound/valtrack/clickhouse"
     "github.com/chainbound/valtrack/log"
     "github.com/chainbound/valtrack/types"
+    "github.com/ipinfo/go/v2/ipinfo"
+    ma "github.com/multiformats/go-multiaddr"
     _ "github.com/mattn/go-sqlite3"
     "github.com/nats-io/nats.go"
     "github.com/nats-io/nats.go/jetstream"
     "github.com/rs/zerolog"
     "github.com/xitongsys/parquet-go-source/local"
     "github.com/xitongsys/parquet-go/writer"
-    "github.com/ipinfo/go/v2/ipinfo"
 )
 
 const basePath = "/data"
@@ -48,10 +49,10 @@ type Consumer struct {
     ipMetadataWriter *writer.ParquetWriter
     js               jetstream.JetStream
 
-    peerDiscoveredChan       chan *types.PeerDiscoveredEvent
-    metadataReceivedChan     chan *types.MetadataReceivedEvent
-    validatorMetadataChan    chan *types.MetadataReceivedEvent
-    ipMetadataChan           chan *types.IPMetadataEvent
+    peerDiscoveredChan    chan *types.PeerDiscoveredEvent
+    metadataReceivedChan  chan *types.MetadataReceivedEvent
+    validatorMetadataChan chan *types.MetadataReceivedEvent
+    ipMetadataChan        chan *types.IPMetadataEvent
 
     chClient *ch.ClickhouseClient
     db       *sql.DB
@@ -71,7 +72,7 @@ func NewConsumer(cfg *ConsumerConfig, log zerolog.Logger, js jetstream.JetStream
     }
 
     metadataFilePath := fmt.Sprintf("%s/metadata_events.parquet", basePath)
-    w_metadata, err := local.NewLocalFileWriter(metadataFilePath)    
+    w_metadata, err := local.NewLocalFileWriter(metadataFilePath)
     if err != nil {
         return nil, fmt.Errorf("error creating metadata events parquet file: %w", err)
     }
@@ -116,17 +117,17 @@ func NewConsumer(cfg *ConsumerConfig, log zerolog.Logger, js jetstream.JetStream
         ipMetadataWriter: ipMetadataWriter,
         js:               js,
 
-        peerDiscoveredChan:       make(chan *types.PeerDiscoveredEvent, 16384),
-        metadataReceivedChan:     make(chan *types.MetadataReceivedEvent, 16384),
-        validatorMetadataChan:    make(chan *types.MetadataReceivedEvent, 16384),
-        ipMetadataChan:           make(chan *types.IPMetadataEvent, 16384),
+        peerDiscoveredChan:    make(chan *types.PeerDiscoveredEvent, 16384),
+        metadataReceivedChan:  make(chan *types.MetadataReceivedEvent, 16384),
+        validatorMetadataChan: make(chan *types.MetadataReceivedEvent, 16384),
+        ipMetadataChan:        make(chan *types.IPMetadataEvent, 16384),
 
         chClient: chClient,
         db:       db,
         dune:     dune,
 
-        ipCache:    make(map[string]*types.IPMetadataEvent),
-        ipCacheTTL: 1 * time.Hour,
+        ipCache:     make(map[string]*types.IPMetadataEvent),
+        ipCacheTTL:  1 * time.Hour,
         ipInfoToken: os.Getenv("IPINFO_TOKEN"),
     }, nil
 }
@@ -164,13 +165,13 @@ func RunConsumer(cfg *ConsumerConfig) {
     }
 
     chCfg := ch.ClickhouseConfig{
-        Endpoint: cfg.ChCfg.Endpoint,
-        DB:       cfg.ChCfg.DB,
-        Username: cfg.ChCfg.Username,
-        Password: cfg.ChCfg.Password,
-        MaxValidatorBatchSize: cfg.ChCfg.MaxValidatorBatchSize,
-        MaxIPMetadataBatchSize: cfg.ChCfg.MaxIPMetadataBatchSize,
-        MaxPeerDiscoveredEventsBatchSize: cfg.ChCfg.MaxPeerDiscoveredEventsBatchSize,
+        Endpoint:                           cfg.ChCfg.Endpoint,
+        DB:                                 cfg.ChCfg.DB,
+        Username:                           cfg.ChCfg.Username,
+        Password:                           cfg.ChCfg.Password,
+        MaxValidatorBatchSize:              cfg.ChCfg.MaxValidatorBatchSize,
+        MaxIPMetadataBatchSize:             cfg.ChCfg.MaxIPMetadataBatchSize,
+        MaxPeerDiscoveredEventsBatchSize:   cfg.ChCfg.MaxPeerDiscoveredEventsBatchSize,
         MaxMetadataReceivedEventsBatchSize: cfg.ChCfg.MaxMetadataReceivedEventsBatchSize,
     }
 
@@ -181,7 +182,7 @@ func RunConsumer(cfg *ConsumerConfig) {
             log.Error().Err(err).Msg("Error creating Clickhouse client")
             return
         }
-        defer chClient.Close() // Add this line to ensure the client is closed
+        defer chClient.Close()
 
         err = chClient.Start()
         if err != nil {
@@ -269,14 +270,11 @@ func RunConsumer(cfg *ConsumerConfig) {
         log.Error().Err(err).Msg("Error shutting down HTTP server")
     }
 
-    // If you have a Clickhouse client, close it here
     if chClient != nil {
         if err := chClient.Close(); err != nil {
             log.Error().Err(err).Msg("Error closing Clickhouse client")
         }
     }
-
-    // Any other cleanup can go here
 
     log.Info().Msg("Consumer shutdown complete")
 }
@@ -304,9 +302,10 @@ func (c *Consumer) Start(name string) error {
         return err
     }
 
-    // Load IP metadata from CSV
-    if err := c.chClient.LoadIPMetadataFromCSV(); err != nil {
-        c.log.Error().Err(err).Msg("Failed to load IP metadata from CSV")
+    if c.chClient != nil {
+        if err := c.chClient.LoadIPMetadataFromCSV(); err != nil {
+            c.log.Error().Err(err).Msg("Failed to load IP metadata from CSV")
+        }
     }
 
     go func() {
@@ -346,7 +345,6 @@ func (c *Consumer) handleMessage(msg jetstream.Msg) {
         c.log.Info().Str("IP", ipEvent.IP).Msg("IP metadata received")
         c.ipMetadataChan <- &ipEvent
 
-        // Send to ClickHouse if client is initialized
         if c.chClient != nil {
             c.chClient.IPMetadataEventChan <- &ipEvent
         }
@@ -360,13 +358,11 @@ func (c *Consumer) handleMessage(msg jetstream.Msg) {
         }
 
         c.log.Info().Time("timestamp", md.Timestamp).Uint64("pending", md.NumPending).Str("progress", fmt.Sprintf("%.2f%%", progress)).Msg("peer_discovered")
-        
-        // Fetch IP metadata synchronously
+
         ipMetadata, err := c.getIPMetadata(event.IP)
         if err != nil {
             c.log.Error().Err(err).Str("ip", event.IP).Msg("Failed to fetch IP metadata")
         } else {
-            // Insert IP metadata into ClickHouse
             if err := c.ensureIPMetadataInClickHouse(ipMetadata); err != nil {
                 c.log.Error().Err(err).Str("ip", event.IP).Msg("Failed to ensure IP metadata in ClickHouse")
             }
@@ -374,7 +370,6 @@ func (c *Consumer) handleMessage(msg jetstream.Msg) {
 
         c.storeDiscoveryEvent(event)
 
-        // Send to ClickHouse if client is initialized
         if c.chClient != nil {
             c.chClient.PeerDiscoveredEventChan <- &event
         }
@@ -391,7 +386,6 @@ func (c *Consumer) handleMessage(msg jetstream.Msg) {
         c.handleMetadataEvent(event)
         c.storeMetadataEvent(event)
 
-        // Send to ClickHouse if client is initialized
         if c.chClient != nil {
             c.chClient.MetadataReceivedEventChan <- &event
         }
@@ -416,7 +410,10 @@ func (c *Consumer) getIPMetadata(ip string) (*types.IPMetadataEvent, error) {
 
     // Check ClickHouse
     metadata, err := c.getIPMetadataFromClickHouse(ip)
-    if err == nil {
+    if err != nil {
+        return nil, fmt.Errorf("error querying ClickHouse: %w", err)
+    }
+    if metadata != nil {
         // Found in ClickHouse, cache and return
         c.cacheIPMetadata(ip, metadata)
         return metadata, nil
@@ -429,6 +426,12 @@ func (c *Consumer) getIPMetadata(ip string) (*types.IPMetadataEvent, error) {
     }
 
     metadata = convertIPInfoToMetadata(ipInfo)
+
+    // Store metadata into ClickHouse
+    if err := c.ensureIPMetadataInClickHouse(metadata); err != nil {
+        return nil, fmt.Errorf("failed to ensure IP metadata in ClickHouse: %w", err)
+    }
+
     c.cacheIPMetadata(ip, metadata)
 
     return metadata, nil
@@ -440,13 +443,13 @@ func (c *Consumer) getIPMetadataFromClickHouse(ip string) (*types.IPMetadataEven
 
     var metadata types.IPMetadataEvent
     query := fmt.Sprintf("SELECT ip, hostname, city, region, country, latitude, longitude, postal_code, asn, asn_organization, asn_type FROM ip_metadata WHERE ip = '%s'", ip)
-    
+
     err := c.chClient.QueryRow(ctx, query).Scan(
         &metadata.IP, &metadata.Hostname, &metadata.City, &metadata.Region,
         &metadata.Country, &metadata.Latitude, &metadata.Longitude,
         &metadata.PostalCode, &metadata.ASN, &metadata.ASNOrganization, &metadata.ASNType,
     )
-    
+
     if err != nil {
         if err == sql.ErrNoRows {
             return nil, nil // No metadata found for this IP
@@ -457,33 +460,51 @@ func (c *Consumer) getIPMetadataFromClickHouse(ip string) (*types.IPMetadataEven
     return &metadata, nil
 }
 
-func (c *Consumer) fetchIPInfoFromAPI(ip string) (*ipinfo.IPInfo, error) {
-    client := ipinfo.NewClient(nil, ipinfo.NewCache(nil), c.ipInfoToken)
-    info, err := client.GetIPInfo(net.ParseIP(ip))
+func (c *Consumer) fetchIPInfoFromAPI(ip string) (*ipinfo.Core, error) {
+    client := ipinfo.NewClient(nil, nil, c.ipInfoToken)
+    ipParsed := net.ParseIP(ip)
+    if ipParsed == nil {
+        return nil, fmt.Errorf("invalid IP address: %s", ip)
+    }
+    info, err := client.GetIPInfo(ipParsed)
     if err != nil {
         return nil, fmt.Errorf("IPInfo API error: %w", err)
     }
     return info, nil
 }
 
-func convertIPInfoToMetadata(info *ipinfo.IPInfo) *types.IPMetadataEvent {
-    lat, _ := strconv.ParseFloat(info.Latitude, 64)
-    lon, _ := strconv.ParseFloat(info.Longitude, 64)
-    
+func convertIPInfoToMetadata(info *ipinfo.Core) *types.IPMetadataEvent {
+    var lat, long float64
+    if info.Location != "" {
+        parts := strings.Split(info.Location, ",")
+        if len(parts) == 2 {
+            lat, _ = strconv.ParseFloat(parts[0], 64)
+            long, _ = strconv.ParseFloat(parts[1], 64)
+        }
+    }
+
+    var asn, asnOrganization, asnType string
+    if info.ASN != nil {
+        asn = info.ASN.ASN
+        asnOrganization = info.ASN.Name
+        asnType = info.ASN.Type
+    }
+
     return &types.IPMetadataEvent{
         IP:              info.IP.String(),
         Hostname:        info.Hostname,
         City:            info.City,
         Region:          info.Region,
-        Country:         info.CountryName,
+        Country:         info.Country,
         Latitude:        lat,
-        Longitude:       lon,
+        Longitude:       long,
         PostalCode:      info.Postal,
-        ASN:             info.ASN,
-        ASNOrganization: info.Org,
-        ASNType:         "", // IPInfo might not provide ASN type directly
+        ASN:             asn,
+        ASNOrganization: asnOrganization,
+        ASNType:         asnType,
     }
 }
+
 
 func (c *Consumer) cacheIPMetadata(ip string, metadata *types.IPMetadataEvent) {
     c.ipCacheMu.Lock()
@@ -505,6 +526,8 @@ func (c *Consumer) ensureIPMetadataInClickHouse(metadata *types.IPMetadataEvent)
         return fmt.Errorf("ClickHouse channel is full or unavailable")
     }
 }
+
+
 
 func (c *Consumer) handleMetadataEvent(event types.MetadataReceivedEvent) {
     longLived := indexesFromBitfield(event.MetaData.Attnets)

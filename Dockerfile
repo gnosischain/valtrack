@@ -1,42 +1,31 @@
-ARG GO_VERSION=1.22.5
+FROM golang:1.22.5-bookworm as builder
 
-# Stage 1: Dependency management and build
-FROM golang:${GO_VERSION}-bookworm as builder
+# Install CA certificates and build essentials
+RUN apt-get update && apt-get install -y ca-certificates build-essential && rm -rf /var/lib/apt/lists/*
 
+# Set the working directory inside the container to /app
 WORKDIR /app
 
-# Copy go.mod and go.sum files
+# Copy the Go module files
 COPY go.mod go.sum ./
 
-# Download dependencies and verify modules
-RUN go mod download && go mod verify
+# Download dependencies
+RUN go mod download
 
 # Copy the rest of the application source code
 COPY . .
 
-# Run go mod tidy to ensure the go.mod file is up to date
-RUN go mod tidy
+# Build the application; output the binary to a known location
+RUN go build -v -o /run-app .
 
-# Build the application and capture the output
-RUN go build -v -o /run-app . 
-
-# Stage 2: Final stage
+# Final stage based on Debian Bookworm-slim
 FROM debian:bookworm-slim
 
-# Install CA certificates in the final image
+# Install CA certificates in the final image to ensure they are present.
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Copy the built executable from the builder stage
 COPY --from=builder /run-app /usr/local/bin/run-app
-
-# Create necessary directory
-RUN mkdir -p /app/data
-
-# Copy the CSV file to /app/data
-COPY /data/ip_metadata.csv /app/data/ip_metadata.csv
-
-# Set the working directory
-WORKDIR /app
 
 # Set the command to run the application
 CMD ["/usr/local/bin/run-app"]
