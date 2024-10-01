@@ -411,15 +411,14 @@ func (c *Consumer) getIPMetadata(ip string) (*types.IPMetadataEvent, error) {
     // Check ClickHouse
     metadata, err := c.getIPMetadataFromClickHouse(ip)
     if err != nil {
-        return nil, fmt.Errorf("error querying ClickHouse: %w", err)
-    }
-    if metadata != nil {
+        c.log.Warn().Err(err).Str("ip", ip).Msg("Error querying ClickHouse for IP metadata, falling back to API")
+    } else if metadata != nil {
         // Found in ClickHouse, cache and return
         c.cacheIPMetadata(ip, metadata)
         return metadata, nil
     }
 
-    // Not found in ClickHouse, fetch from IPInfo API
+    // Not found in ClickHouse or error occurred, fetch from IPInfo API
     ipInfo, err := c.fetchIPInfoFromAPI(ip)
     if err != nil {
         return nil, fmt.Errorf("failed to fetch IP info: %w", err)
@@ -427,9 +426,11 @@ func (c *Consumer) getIPMetadata(ip string) (*types.IPMetadataEvent, error) {
 
     metadata = convertIPInfoToMetadata(ipInfo)
 
-    // Store metadata into ClickHouse
-    if err := c.ensureIPMetadataInClickHouse(metadata); err != nil {
-        return nil, fmt.Errorf("failed to ensure IP metadata in ClickHouse: %w", err)
+    // Only insert into ClickHouse if fetched from API
+    if c.chClient != nil {
+        if err := c.ensureIPMetadataInClickHouse(metadata); err != nil {
+            c.log.Warn().Err(err).Str("ip", ip).Msg("Failed to insert IP metadata into ClickHouse")
+        }
     }
 
     c.cacheIPMetadata(ip, metadata)
@@ -437,28 +438,58 @@ func (c *Consumer) getIPMetadata(ip string) (*types.IPMetadataEvent, error) {
     return metadata, nil
 }
 
+
 func (c *Consumer) getIPMetadataFromClickHouse(ip string) (*types.IPMetadataEvent, error) {
+    if c.chClient == nil {
+        return nil, fmt.Errorf("ClickHouse client is not initialized")
+    }
+
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
     defer cancel()
 
     var metadata types.IPMetadataEvent
-    query := fmt.Sprintf("SELECT ip, hostname, city, region, country, latitude, longitude, postal_code, asn, asn_organization, asn_type FROM ip_metadata WHERE ip = '%s'", ip)
+    query := `
+        SELECT ip, hostname, city, region, country, latitude, longitude, postal_code, asn, asn_organization, asn_type
+        FROM ip_metadata
+        WHERE ip = ?
+        LIMIT 1
+    `
 
-    err := c.chClient.QueryRow(ctx, query).Scan(
-        &metadata.IP, &metadata.Hostname, &metadata.City, &metadata.Region,
-        &metadata.Country, &metadata.Latitude, &metadata.Longitude,
-        &metadata.PostalCode, &metadata.ASN, &metadata.ASNOrganization, &metadata.ASNType,
-    )
+    c.log.Debug().Str("ip", ip).Msg("Querying ClickHouse for IP metadata")
 
+    rows, err := c.chClient.ChConn.Query(ctx, query, ip)
     if err != nil {
-        if err == sql.ErrNoRows {
-            return nil, nil // No metadata found for this IP
-        }
+        c.log.Error().Err(err).Str("ip", ip).Msg("Error executing query in ClickHouse")
         return nil, fmt.Errorf("error querying ClickHouse: %w", err)
     }
+    defer rows.Close()
 
-    return &metadata, nil
+    if rows.Next() {
+        if err := rows.Scan(
+            &metadata.IP,
+            &metadata.Hostname,
+            &metadata.City,
+            &metadata.Region,
+            &metadata.Country,
+            &metadata.Latitude,
+            &metadata.Longitude,
+            &metadata.PostalCode,
+            &metadata.ASN,
+            &metadata.ASNOrganization,
+            &metadata.ASNType,
+        ); err != nil {
+            c.log.Error().Err(err).Str("ip", ip).Msg("Error scanning row")
+            return nil, fmt.Errorf("error scanning row: %w", err)
+        }
+
+        c.log.Debug().Str("ip", ip).Msg("Successfully retrieved IP metadata from ClickHouse")
+        return &metadata, nil
+    } else {
+        c.log.Debug().Str("ip", ip).Msg("No metadata found in ClickHouse for IP")
+        return nil, nil
+    }
 }
+
 
 func (c *Consumer) fetchIPInfoFromAPI(ip string) (*ipinfo.Core, error) {
     client := ipinfo.NewClient(nil, nil, c.ipInfoToken)
@@ -630,14 +661,6 @@ func (c *Consumer) processIPMetadataEvents() {
             continue
         }
         c.log.Trace().Msg("Wrote IP metadata event to Parquet file")
-
-        if c.chClient != nil {
-            if err := c.sendIPMetadataToClickHouse(ipEvent); err != nil {
-                c.log.Error().Err(err).Str("IP", ipEvent.IP).Msg("Failed to send IP metadata event to ClickHouse")
-                continue
-            }
-            c.log.Info().Str("IP", ipEvent.IP).Msg("IP metadata event sent to ClickHouse successfully")
-        }
     }
 }
 

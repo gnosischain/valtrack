@@ -27,5 +27,11 @@ RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/
 # Copy the built executable from the builder stage
 COPY --from=builder /run-app /usr/local/bin/run-app
 
+# Create a directory for the data
+RUN mkdir -p /app/data
+
+# Copy the CSV file
+COPY data/ip_metadata.csv /app/data/ip_metadata.csv
+
 # Set the command to run the application
 CMD ["/usr/local/bin/run-app"]
