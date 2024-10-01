@@ -47,7 +47,7 @@ func (c *ClickhouseClient) LoadIPMetadataFromCSV() error {
     reader := csv.NewReader(file)
     reader.FieldsPerRecord = -1 // Allow variable number of fields
 
-    batch, err := c.chConn.PrepareBatch(context.Background(), "INSERT INTO ip_metadata")
+    batch, err := c.ChConn.PrepareBatch(context.Background(), "INSERT INTO ip_metadata")
     if err != nil {
         return fmt.Errorf("failed to prepare batch: %w", err)
     }
@@ -176,7 +176,7 @@ func parseFloat(s string) (float64, error) {
 func (c *ClickhouseClient) isTableEmpty(tableName string) (bool, error) {
     query := fmt.Sprintf("SELECT count(*) FROM %s", tableName)
     var count uint64 
-    err := c.chConn.QueryRow(context.Background(), query).Scan(&count)
+    err := c.ChConn.QueryRow(context.Background(), query).Scan(&count)
     if err != nil {
         return false, err
     }
@@ -217,7 +217,7 @@ func IPMetadataDDL(db string) string {
 			asn String,
 			asn_organization String,
 			asn_type String
-		) ENGINE = MergeTree()
+		) ENGINE = ReplacingMergeTree()
 		ORDER BY ip;
 	`, db)
 }
@@ -267,74 +267,78 @@ type ClickhouseConfig struct {
 }
 
 type ClickhouseClient struct {
-	cfg *ClickhouseConfig
-	log zerolog.Logger
+    cfg    *ClickhouseConfig
+    log    zerolog.Logger
+    ChConn clickhouse.Conn
 
-	chConn driver.Conn
-
-	ValidatorEventChan      chan *types.ValidatorEvent      
-    IPMetadataEventChan     chan *types.IPMetadataEvent     
-	PeerDiscoveredEventChan chan *types.PeerDiscoveredEvent
-	MetadataReceivedEventChan chan *types.MetadataReceivedEvent
+    ValidatorEventChan        chan *types.ValidatorEvent
+    IPMetadataEventChan       chan *types.IPMetadataEvent
+    PeerDiscoveredEventChan   chan *types.PeerDiscoveredEvent
+    MetadataReceivedEventChan chan *types.MetadataReceivedEvent
 }
 
 
 func NewClickhouseClient(cfg *ClickhouseConfig) (*ClickhouseClient, error) {
-	log := log.NewLogger("clickhouse")
+    log := log.NewLogger("clickhouse")
 
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr:        []string{cfg.Endpoint},
-		DialTimeout: time.Second * 60,
-		Auth: clickhouse.Auth{
-			Database: cfg.DB,
-			Username: cfg.Username,
-			Password: cfg.Password,
-		},
-		Debugf: func(format string, v ...interface{}) {
-			log.Debug().Str("module", "clickhouse").Msgf(format, v)
-		},
-		Protocol: clickhouse.Native,
-		TLS: &tls.Config{},
-	})
+    conn, err := clickhouse.Open(&clickhouse.Options{
+        Addr:        []string{cfg.Endpoint},
+        DialTimeout: time.Second * 60,
+        Auth: clickhouse.Auth{
+            Database: cfg.DB,
+            Username: cfg.Username,
+            Password: cfg.Password,
+        },
+        Debugf: func(format string, v ...interface{}) {
+            log.Debug().Str("module", "clickhouse").Msgf(format, v)
+        },
+        Protocol: clickhouse.Native,
+        TLS:      &tls.Config{},
+    })
 
-	if err != nil {
-		return nil, err
-	}
+    if err != nil {
+        return nil, err
+    }
 
-	return &ClickhouseClient{
-		cfg:    cfg,
-		log:    log,
-		chConn: conn,
+    return &ClickhouseClient{
+        cfg:    cfg,
+        log:    log,
+        ChConn: conn,
 
-		ValidatorEventChan: make(chan *types.ValidatorEvent, 16384),
-		IPMetadataEventChan:     make(chan *types.IPMetadataEvent, 16384),     
-		PeerDiscoveredEventChan: make(chan *types.PeerDiscoveredEvent, 16384),
-		MetadataReceivedEventChan: make(chan *types.MetadataReceivedEvent, 16384),
-	}, nil
+        ValidatorEventChan:        make(chan *types.ValidatorEvent, 16384),
+        IPMetadataEventChan:       make(chan *types.IPMetadataEvent, 16384),
+        PeerDiscoveredEventChan:   make(chan *types.PeerDiscoveredEvent, 16384),
+        MetadataReceivedEventChan: make(chan *types.MetadataReceivedEvent, 16384),
+    }, nil
+}
+
+
+func (c *ClickhouseClient) Close() error {
+    return c.ChConn.Close()
 }
 
 func (c *ClickhouseClient) initializeTables() error {
     // Create validator_metadata table
-    if err := c.chConn.Exec(context.Background(), ValidatorMetadataDDL(c.cfg.DB)); err != nil {
+    if err := c.ChConn.Exec(context.Background(), ValidatorMetadataDDL(c.cfg.DB)); err != nil {
         c.log.Error().Err(err).Msg("creating validator_metadata table")
         return err
     }
 
     // Create ip_metadata table
-    if err := c.chConn.Exec(context.Background(), IPMetadataDDL(c.cfg.DB)); err != nil {
+    if err := c.ChConn.Exec(context.Background(), IPMetadataDDL(c.cfg.DB)); err != nil {
         c.log.Error().Err(err).Msg("creating ip_metadata table")
         return err
     }
 
 
 	// Create peer_discovered_events table
-    if err := c.chConn.Exec(context.Background(), PeerDiscoveredEventsDDL(c.cfg.DB)); err != nil {
+    if err := c.ChConn.Exec(context.Background(), PeerDiscoveredEventsDDL(c.cfg.DB)); err != nil {
         c.log.Error().Err(err).Msg("creating peer_discovered_events table")
         return err
     }
 
 	// Create metadata_received_events table
-    if err := c.chConn.Exec(context.Background(), MetadataReceivedEventsDDL(c.cfg.DB)); err != nil {
+    if err := c.ChConn.Exec(context.Background(), MetadataReceivedEventsDDL(c.cfg.DB)); err != nil {
         c.log.Error().Err(err).Msg("creating metadata_received_events table")
         return err
     }
@@ -368,7 +372,7 @@ func (c *ClickhouseClient) Start() error {
 // BatchProcessor processes events in batches for a specified table in ClickHouse.
 func batchProcessor[T any](client *ClickhouseClient, tableName string, eventChan <-chan T, maxSize uint64) {
 	// Prepare the initial batch.
-	batch, err := client.chConn.PrepareBatch(context.Background(), fmt.Sprintf("INSERT INTO %s", tableName))
+	batch, err := client.ChConn.PrepareBatch(context.Background(), fmt.Sprintf("INSERT INTO %s", tableName))
 	if err != nil {
 		client.log.Error().Err(err).Msg("Failed to prepare batch")
 		return
@@ -396,7 +400,7 @@ func batchProcessor[T any](client *ClickhouseClient, tableName string, eventChan
 			}
 
 			// Prepare a new batch after sending the current batch.
-			batch, err = client.chConn.PrepareBatch(context.Background(), fmt.Sprintf("INSERT INTO %s", tableName))
+			batch, err = client.ChConn.PrepareBatch(context.Background(), fmt.Sprintf("INSERT INTO %s", tableName))
 			if err != nil {
 				client.log.Error().Err(err).Msg("Failed to prepare new batch after sending")
 				return

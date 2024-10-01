@@ -24,7 +24,7 @@ const (
 	Connecting
 )
 
-const EPOCH_DURATION = 12 * 32 * time.Second
+const EPOCH_DURATION = 5 * 16 * time.Second //Gnosis
 
 // PeerInfo contains information about a peer
 type PeerInfo struct {
@@ -57,7 +57,7 @@ func (p *PeerInfo) IntoMetadataEvent() *types.MetadataReceivedEvent {
 		ClientVersion: p.clientVersion,
 		MetaData:      simpleMetadata,
 		// `epoch = slot // SLOTS_PER_EPOCH`
-		Epoch: int(p.status.HeadSlot) / 32,
+		Epoch: int(p.status.HeadSlot) / 16,
 		// These should be set later
 		CrawlerID:         "",
 		CrawlerLoc:        "",
