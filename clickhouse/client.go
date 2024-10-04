@@ -232,7 +232,7 @@ func PeerDiscoveredEventsDDL(db string) string {
 			crawler_id String,
 			crawler_location String,
 			timestamp DateTime64(3, 'UTC')
-		) ENGINE = MergeTree()
+		) ENGINE = ReplacingMergeTree()
 		ORDER BY (timestamp, id);
 	`, db)
 }
@@ -249,7 +249,7 @@ func MetadataReceivedEventsDDL(db string) string {
 			crawler_id String,
 			crawler_location String,
 			timestamp DateTime64(3, 'UTC')
-		) ENGINE = MergeTree()
+		) ENGINE = ReplacingMergeTree()
 		ORDER BY (timestamp, id);
 	`, db)
 }
