@@ -9,6 +9,7 @@ import (
     "os"
     "strconv"
     "strings"
+    "time"
 
     "github.com/ipinfo/go/v2/ipinfo"
     ma "github.com/multiformats/go-multiaddr"
@@ -17,9 +18,9 @@ import (
 )
 
 type asnJSON struct {
-	Asn             string `json:"asn"`
-	AsnOrganization string `json:"name"`
-	Type            string `json:"type"`
+    Asn             string `json:"asn"`
+    AsnOrganization string `json:"name"`
+    Type            string `json:"type"`
 }
 
 var (
@@ -53,15 +54,6 @@ var (
     );
     `
 
-    createValidatorCountsTableQuery = `
-    CREATE TABLE IF NOT EXISTS validator_counts (
-        peer_id TEXT,
-        validator_count INTEGER,
-        n_observations INTEGER DEFAULT 1,
-        PRIMARY KEY (peer_id, validator_count)
-    );
-    `
-
     insertTrackerQuery = `
     INSERT INTO validator_tracker (peer_id, enr, multiaddr, ip, port, last_seen, last_epoch, client_version, total_observations)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (peer_id) DO UPDATE SET total_observations = total_observations + 1;
@@ -88,9 +80,6 @@ var (
                             asn=excluded.asn,
                             asn_organization=excluded.asn_organization,
                             asn_type=excluded.asn_type;`
-
-	insertValidatorCountsQuery = `INSERT INTO validator_counts (peer_id, validator_count, n_observations) VALUES (?, ?, 1) ON CONFLICT (peer_id, validator_count) DO UPDATE SET n_observations = validator_counts.n_observations + 1;`
-
 )
 
 func setupDatabase(db *sql.DB) error {
@@ -100,11 +89,6 @@ func setupDatabase(db *sql.DB) error {
     }
 
     _, err = db.Exec(createIpMetadataTableQuery)
-    if err != nil {
-        return err
-    }
-
-    _, err = db.Exec(createValidatorCountsTableQuery)
     if err != nil {
         return err
     }
@@ -170,136 +154,153 @@ func insertIPMetadata(tx *sql.Tx, ipEvent *types.IPMetadataEvent) error {
     return err
 }
 
-func (c *Consumer) runValidatorMetadataEventHandler(token string) error {
+func (c *Consumer) runValidatorMetadataEventHandler(token string) {
     client := ipinfo.NewClient(nil, nil, token)
     batchSize := 0
-    tx, err := c.db.Begin()
-    if err != nil {
-        return err
-    }
+    var tx *sql.Tx
+    var err error
 
     for {
-        event := <-c.validatorMetadataChan
-        c.log.Trace().Any("event", event).Msg("Received validator event")
-
-        maddr, err := ma.NewMultiaddr(event.Multiaddr)
-        if err != nil {
-            c.log.Error().Err(err).Msg("Invalid multiaddr")
-            continue
-        }
-
-        ip, err := maddr.ValueForProtocol(ma.P_IP4)
-        if err != nil {
-            ip, err = maddr.ValueForProtocol(ma.P_IP6)
-            if err != nil {
-                c.log.Error().Err(err).Msg("Invalid IP in multiaddr")
-                continue
+        select {
+        case <-c.done:
+            if tx != nil {
+                tx.Rollback()
             }
-        }
+            return
+        default:
+            func() {
+                defer func() {
+                    if r := recover(); r != nil {
+                        c.log.Error().Interface("recover", r).Msg("Recovered from panic in validator metadata handler")
+                        if tx != nil {
+                            tx.Rollback()
+                        }
+                    }
+                }()
 
-        portStr, err := maddr.ValueForProtocol(ma.P_TCP)
-        if err != nil {
-            c.log.Error().Err(err).Msg("Invalid port in multiaddr")
-            continue
-        }
-
-        port, err := strconv.Atoi(portStr)
-        if err != nil {
-            c.log.Error().Err(err).Msg("Invalid port number")
-            continue
-        }
-
-        longLived := indexesFromBitfield(event.MetaData.Attnets)
-        shortLived := extractShortLivedSubnets(event.SubscribedSubnets, longLived)
-        currValidatorCount := len(shortLived)
-
-        var prevTotalObservations int
-        err = c.db.QueryRow("SELECT total_observations FROM validator_tracker WHERE peer_id = ?", event.ID).Scan(&prevTotalObservations)
-
-        if err == sql.ErrNoRows {
-            _, err = tx.Exec(insertTrackerQuery, event.ID, event.ENR, event.Multiaddr, ip, port, event.Timestamp, event.Epoch, event.ClientVersion, 1)
-            if err != nil {
-                c.log.Error().Err(err).Msg("Error inserting row")
-            }
-
-            _, err = tx.Exec(insertValidatorCountsQuery, event.ID, currValidatorCount)
-            if err != nil {
-                c.log.Error().Err(err).Msg("Error inserting validator count")
-            }
-
-            batchSize++
-
-            if err := c.db.QueryRow(selectIpMetadataQuery, ip).Scan(); err == sql.ErrNoRows {
-                c.log.Info().Str("ip", ip).Msg("Unknown IP, fetching IP info...")
-                go func(ip string) {
-                    ipInfo, err := client.GetIPInfo(net.ParseIP(ip))
+                if tx == nil {
+                    tx, err = c.db.Begin()
                     if err != nil {
-                        c.log.Error().Err(err).Msg("Error fetching IP info")
+                        c.log.Error().Err(err).Msg("Failed to begin transaction")
+                        time.Sleep(time.Second)
                         return
                     }
+                }
 
-                    asn := ""
-                    asnOrg := ""
-                    asnType := ""
-                    if ipInfo.ASN != nil {
-                        asn = ipInfo.ASN.ASN
-                        asnOrg = ipInfo.ASN.Name
-                        asnType = ipInfo.ASN.Type
-                    }
+                event, ok := c.validatorMetadataChan.Receive()
+                if !ok {
+                    c.log.Warn().Msg("Validator metadata channel closed unexpectedly, recreating")
+                    c.validatorMetadataChan = NewSafeChannel()
+                    return
+                }
 
-                    parts := strings.Split(ipInfo.Location, ",")
-                    lat, _ := strconv.ParseFloat(parts[0], 64)
-                    long, _ := strconv.ParseFloat(parts[1], 64)
+                c.log.Trace().Any("event", event).Msg("Received validator event")
 
-                    ipMeta := types.IPMetadataEvent{
-                        IP:       ipInfo.IP.String(),
-                        Hostname: ipInfo.Hostname,
-                        City:     ipInfo.City,
-                        Region:   ipInfo.Region,
-                        Country:  ipInfo.Country,
-                        Latitude: lat,
-                        Longitude: long,
-                        PostalCode: ipInfo.Postal,
-                        ASN:      asn,
-                        ASNOrganization: asnOrg,
-                        ASNType:  asnType,
-                    }
+                maddr, err := ma.NewMultiaddr(event.Multiaddr)
+                if err != nil {
+                    c.log.Error().Err(err).Msg("Invalid multiaddr")
+                    return
+                }
 
-                    if err := insertIPMetadata(tx, &ipMeta); err != nil {
-                        c.log.Error().Err(err).Msg("Error inserting IP metadata")
+                ip, err := maddr.ValueForProtocol(ma.P_IP4)
+                if err != nil {
+                    ip, err = maddr.ValueForProtocol(ma.P_IP6)
+                    if err != nil {
+                        c.log.Error().Err(err).Msg("Invalid IP in multiaddr")
                         return
+                    }
+                }
+
+                portStr, err := maddr.ValueForProtocol(ma.P_TCP)
+                if err != nil {
+                    c.log.Error().Err(err).Msg("Invalid port in multiaddr")
+                    return
+                }
+
+                port, err := strconv.Atoi(portStr)
+                if err != nil {
+                    c.log.Error().Err(err).Msg("Invalid port number")
+                    return
+                }
+
+                var prevTotalObservations int
+                err = c.db.QueryRow("SELECT total_observations FROM validator_tracker WHERE peer_id = ?", event.ID).Scan(&prevTotalObservations)
+
+                if err == sql.ErrNoRows {
+                    _, err = tx.Exec(insertTrackerQuery, event.ID, event.ENR, event.Multiaddr, ip, port, event.Timestamp, event.Epoch, event.ClientVersion, 1)
+                    if err != nil {
+                        c.log.Error().Err(err).Msg("Error inserting row")
                     }
 
                     batchSize++
-                    c.ipMetadataChan <- &ipMeta
-                }(ip)
-            }
-            c.log.Trace().Str("peer_id", event.ID).Msg("Inserted new row")
-        } else if err != nil {
-            c.log.Error().Err(err).Msg("Error querying validator_tracker database")
-        } else {
-            _, err = tx.Exec(updateTrackerQuery, event.ENR, event.Multiaddr, ip, port, event.Timestamp, event.Epoch, event.ClientVersion, event.ID)
-            if err != nil {
-                c.log.Error().Err(err).Msg("Error updating row")
-            }
 
-            _, err = tx.Exec(insertValidatorCountsQuery, event.ID, currValidatorCount)
-            if err != nil {
-                c.log.Error().Err(err).Msg("Error inserting validator count")
-            }
+                    if err := c.db.QueryRow(selectIpMetadataQuery, ip).Scan(); err == sql.ErrNoRows {
+                        c.log.Info().Str("ip", ip).Msg("Unknown IP, fetching IP info...")
+                        go func(ip string) {
+                            ipInfo, err := client.GetIPInfo(net.ParseIP(ip))
+                            if err != nil {
+                                c.log.Error().Err(err).Msg("Error fetching IP info")
+                                return
+                            }
 
-            batchSize++
-            c.log.Trace().Str("peer_id", event.ID).Msg("Updated row")
-        }
+                            asn := ""
+                            asnOrg := ""
+                            asnType := ""
+                            if ipInfo.ASN != nil {
+                                asn = ipInfo.ASN.ASN
+                                asnOrg = ipInfo.ASN.Name
+                                asnType = ipInfo.ASN.Type
+                            }
 
-        if batchSize >= 32 {
-            tx.Commit()
-            tx, err = c.db.Begin()
-            if err != nil {
-                return err
-            }
+                            parts := strings.Split(ipInfo.Location, ",")
+                            lat, _ := strconv.ParseFloat(parts[0], 64)
+                            long, _ := strconv.ParseFloat(parts[1], 64)
 
-            batchSize = 0
+                            ipMeta := types.IPMetadataEvent{
+                                IP:               ipInfo.IP.String(),
+                                Hostname:         ipInfo.Hostname,
+                                City:             ipInfo.City,
+                                Region:           ipInfo.Region,
+                                Country:          ipInfo.Country,
+                                Latitude:         lat,
+                                Longitude:        long,
+                                PostalCode:       ipInfo.Postal,
+                                ASN:              asn,
+                                ASNOrganization:  asnOrg,
+                                ASNType:          asnType,
+                            }
+
+                            if err := insertIPMetadata(tx, &ipMeta); err != nil {
+                                c.log.Error().Err(err).Msg("Error inserting IP metadata")
+                                return
+                            }
+
+                            batchSize++
+                            c.ipMetadataChan <- &ipMeta
+                        }(ip)
+                    }
+                    c.log.Trace().Str("peer_id", event.ID).Msg("Inserted new row")
+                } else if err != nil {
+                    c.log.Error().Err(err).Msg("Error querying validator_tracker database")
+                } else {
+                    _, err = tx.Exec(updateTrackerQuery, event.ENR, event.Multiaddr, ip, port, event.Timestamp, event.Epoch, event.ClientVersion, event.ID)
+                    if err != nil {
+                        c.log.Error().Err(err).Msg("Error updating row")
+                    }
+
+                    batchSize++
+                    c.log.Trace().Str("peer_id", event.ID).Msg("Updated row")
+                }
+
+                if batchSize >= 32 {
+                    if err := tx.Commit(); err != nil {
+                        c.log.Error().Err(err).Msg("Failed to commit transaction")
+                        tx.Rollback()
+                    }
+                    tx = nil
+                    batchSize = 0
+                }
+            }()
         }
     }
 }
