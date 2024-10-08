@@ -18,9 +18,9 @@ import (
 )
 
 type asnJSON struct {
-	Asn             string `json:"asn"`
-	AsnOrganization string `json:"name"`
-	Type            string `json:"type"`
+    Asn             string `json:"asn"`
+    AsnOrganization string `json:"name"`
+    Type            string `json:"type"`
 }
 
 var (
@@ -54,15 +54,6 @@ var (
     );
     `
 
-    createValidatorCountsTableQuery = `
-    CREATE TABLE IF NOT EXISTS validator_counts (
-        peer_id TEXT,
-        validator_count INTEGER,
-        n_observations INTEGER DEFAULT 1,
-        PRIMARY KEY (peer_id, validator_count)
-    );
-    `
-
     insertTrackerQuery = `
     INSERT INTO validator_tracker (peer_id, enr, multiaddr, ip, port, last_seen, last_epoch, client_version, total_observations)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (peer_id) DO UPDATE SET total_observations = total_observations + 1;
@@ -89,9 +80,6 @@ var (
                             asn=excluded.asn,
                             asn_organization=excluded.asn_organization,
                             asn_type=excluded.asn_type;`
-
-	insertValidatorCountsQuery = `INSERT INTO validator_counts (peer_id, validator_count, n_observations) VALUES (?, ?, 1) ON CONFLICT (peer_id, validator_count) DO UPDATE SET n_observations = validator_counts.n_observations + 1;`
-
 )
 
 func setupDatabase(db *sql.DB) error {
@@ -101,11 +89,6 @@ func setupDatabase(db *sql.DB) error {
     }
 
     _, err = db.Exec(createIpMetadataTableQuery)
-    if err != nil {
-        return err
-    }
-
-    _, err = db.Exec(createValidatorCountsTableQuery)
     if err != nil {
         return err
     }
@@ -240,10 +223,6 @@ func (c *Consumer) runValidatorMetadataEventHandler(token string) {
                     return
                 }
 
-                longLived := indexesFromBitfield(event.MetaData.Attnets)
-                shortLived := extractShortLivedSubnets(event.SubscribedSubnets, longLived)
-                currValidatorCount := len(shortLived)
-
                 var prevTotalObservations int
                 err = c.db.QueryRow("SELECT total_observations FROM validator_tracker WHERE peer_id = ?", event.ID).Scan(&prevTotalObservations)
 
@@ -251,11 +230,6 @@ func (c *Consumer) runValidatorMetadataEventHandler(token string) {
                     _, err = tx.Exec(insertTrackerQuery, event.ID, event.ENR, event.Multiaddr, ip, port, event.Timestamp, event.Epoch, event.ClientVersion, 1)
                     if err != nil {
                         c.log.Error().Err(err).Msg("Error inserting row")
-                    }
-
-                    _, err = tx.Exec(insertValidatorCountsQuery, event.ID, currValidatorCount)
-                    if err != nil {
-                        c.log.Error().Err(err).Msg("Error inserting validator count")
                     }
 
                     batchSize++
@@ -312,11 +286,6 @@ func (c *Consumer) runValidatorMetadataEventHandler(token string) {
                     _, err = tx.Exec(updateTrackerQuery, event.ENR, event.Multiaddr, ip, port, event.Timestamp, event.Epoch, event.ClientVersion, event.ID)
                     if err != nil {
                         c.log.Error().Err(err).Msg("Error updating row")
-                    }
-
-                    _, err = tx.Exec(insertValidatorCountsQuery, event.ID, currValidatorCount)
-                    if err != nil {
-                        c.log.Error().Err(err).Msg("Error inserting validator count")
                     }
 
                     batchSize++
