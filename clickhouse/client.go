@@ -199,7 +199,7 @@ func ValidatorMetadataDDL(db string) string {
 		crawler_id String,
 		crawler_location String,
 		timestamp Int64,
-	) ENGINE = MergeTree()
+	) ENGINE = ReplacingMergeTree()
 PRIMARY KEY (id, timestamp)`, db)
 }
 
